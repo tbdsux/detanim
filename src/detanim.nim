@@ -64,3 +64,34 @@ proc get*(this: BaseClient | AsyncBaseClient, key: string): Future[JsonNode] {.m
   
   result = parseJson(r)
 
+
+proc put*(this: BaseClient | AsyncBaseClient, items: seq[JsonNode]): Future[JsonNode] {.multisync.} =
+  let payload = %*{"items": items}
+  let r = await this.request(&"/items", HttpPut, $payload)
+
+  result = parseJson(r)
+
+
+proc delete*(this: BaseClient | AsyncBaseClient, key: string): Future[JsonNode] {.multisync.} =
+  let r = await this.request(&"/items/{key}", HttpDelete)
+
+  result = parseJson(r)
+
+proc insert*(this: BaseClient | AsyncBaseClient, item: JsonNode): Future[JsonNode] {.multisync.} =
+  let payload = %*{
+    "item": item
+  }
+
+  let r = await this.request(&"/items", HttpPost, $payload)
+  result = parseJson(r)
+
+proc query*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode], limit: uint = 1, last: string = ""): Future[JsonNode] {.multisync.} =
+  let payload = %*{
+    "query": query,
+    "limit": limit,
+    "last": last
+  }
+
+  let r = await this.request(&"/query", HttpPost, $payload)
+  result = parseJson(r)
+
