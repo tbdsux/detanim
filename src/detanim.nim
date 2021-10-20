@@ -1,4 +1,4 @@
-import asyncdispatch, httpclient, os, strutils, strformat, json, uri
+import std/[asyncdispatch, httpclient, os, strutils, strformat, json, uri, tables, typetraits]
 
 const BASE_ENDPOINT = "https://database.deta.sh/v1"
 
@@ -13,6 +13,19 @@ type
     name*: string
   BaseClient* = BaseMain[HttpClient]
   AsyncBaseClient* = BaseMain[AsyncHttpClient]
+
+  # deta base util functions
+  BaseUtil* = ref object
+  BaseUtilIncrement* = ref object
+    val: int
+  BaseUtilAppend* = ref object
+    val: seq[any]
+  BaseUtilPrepend* = ref object
+    val: seq[any]
+  BaseUtilTrim* = ref object
+
+  # update table
+  UpdateTable* = Table[string, any]
 
   # custom error
   RequiredVar* = object of CatchableError
@@ -85,6 +98,40 @@ proc insert*(this: BaseClient | AsyncBaseClient, item: JsonNode): Future[JsonNod
   let r = await this.request(&"/items", HttpPost, $payload)
   result = parseJson(r)
 
+proc update*(this: BaseClient | AsyncBaseClient, updates: JsonNode, key: string): Future[JsonNode] {.multisync.} =
+  new(result)
+
+  var 
+    payloadAppend = %*{}
+    payloadPrepend = %*{}
+    payloadIncrement = %*{}
+    payloadSet = %*{}
+    payloadTrim = newSeq[string]()
+
+  
+  for i, j in updates.pairs:
+    when j is BaseUtilAppend:
+      payloadAppend[i] = j.val
+    elif j is BaseUtilPrepend:
+      payloadPrepend[i] = j.val
+    elif j is BaseUtilIncrement:
+      payloadIncrement[i] = j.val
+    elif j is BaseUtilTrim:
+      payloadTrim.add(i)
+    else:
+      payloadSet[i] = %j
+
+  let payload = %*{
+    "set": payloadSet,
+    "append": payloadAppend,
+    "prepend": payloadPrepend,
+    "increment": payloadIncrement,
+    "delete": payloadTrim
+  }
+
+  let r = await this.request(&"/items/{key}", HttpPatch, $payload)
+  result = parseJson(r)
+    
 proc query*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode], limit: uint = 1, last: string = ""): Future[JsonNode] {.multisync.} =
   let payload = %*{
     "query": query,
@@ -95,3 +142,24 @@ proc query*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode], limit: uin
   let r = await this.request(&"/query", HttpPost, $payload)
   result = parseJson(r)
 
+proc util*(this: BaseClient | AsyncBaseClient): BaseUtil = 
+  new(result)
+
+proc increment*(this: BaseUtil, value: int): BaseUtilIncrement =
+  new(result)
+  result.val = value
+
+proc increment*(this: BaseUtil): BaseUtilIncrement =
+  new(result)
+  result.val = 1
+
+proc append*(this: BaseUtil, value: seq[any]): BaseUtilAppend = 
+  new(result)
+  result.val = value
+
+proc prepend*(this: BaseUtil, value: seq[any]): BaseUtilAppend = 
+  new(result)
+  result.val = value
+
+proc trim*(this: BaseUtil): BaseUtilTrim = 
+  new(result)
