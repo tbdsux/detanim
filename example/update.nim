@@ -7,10 +7,9 @@ let
 let toUpdates = %*{
     "hello": "123", 
     "another": "one",
-    "number": 123,
-    "bool": false,
+    "number": base.util.increment(),
+    "bool": base.util.trim(),
     }
-
 
 let update = base.update(toUpdates, "123")
 echo $update

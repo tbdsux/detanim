@@ -15,14 +15,15 @@ type
   AsyncBaseClient* = BaseMain[AsyncHttpClient]
 
   # deta base util functions
-  BaseUtil* = ref object
-  BaseUtilIncrement* = ref object
+  BaseUtil* = ref object of RootObj
+    action: string
+  BaseUtilIncrement* = ref object of BaseUtil
     val: int
-  BaseUtilAppend* = ref object
-    val: seq[any]
-  BaseUtilPrepend* = ref object
-    val: seq[any]
-  BaseUtilTrim* = ref object
+  BaseUtilAppend*[T] = ref object of BaseUtil
+    val: T
+  BaseUtilPrepend*[T] = ref object of BaseUtil
+    val: T
+  BaseUtilTrim* = ref object of BaseUtil
 
   # update table
   UpdateTable* = Table[string, any]
@@ -110,16 +111,17 @@ proc update*(this: BaseClient | AsyncBaseClient, updates: JsonNode, key: string)
 
   
   for i, j in updates.pairs:
-    when j is BaseUtilAppend:
-      payloadAppend[i] = j.val
-    elif j is BaseUtilPrepend:
-      payloadPrepend[i] = j.val
-    elif j is BaseUtilIncrement:
-      payloadIncrement[i] = j.val
-    elif j is BaseUtilTrim:
-      payloadTrim.add(i)
-    else:
-      payloadSet[i] = %j
+    case j{"action"}.getStr():
+      of "append":
+        payloadAppend[i] = %j{"val"}.getStr()
+      of "prepent":
+        payloadPrepend[i] = %j{"val"}.getStr()
+      of "increment":
+        payloadIncrement[i] = %j{"val"}.getInt()
+      of "trim":
+        payloadTrim.add(i)
+      else:
+        payloadSet[i] = %j
 
   let payload = %*{
     "set": payloadSet,
@@ -145,21 +147,21 @@ proc query*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode], limit: uin
 proc util*(this: BaseClient | AsyncBaseClient): BaseUtil = 
   new(result)
 
-proc increment*(this: BaseUtil, value: int): BaseUtilIncrement =
+proc increment*(this: BaseUtil, value: int | float = 1): BaseUtilIncrement =
   new(result)
   result.val = value
+  result.action = "increment"
 
-proc increment*(this: BaseUtil): BaseUtilIncrement =
-  new(result)
-  result.val = 1
-
-proc append*(this: BaseUtil, value: seq[any]): BaseUtilAppend = 
+proc append*[T](this: BaseUtil, value: seq[T]): BaseUtilAppend[T] = 
   new(result)
   result.val = value
+  result.action = "append"
 
-proc prepend*(this: BaseUtil, value: seq[any]): BaseUtilAppend = 
+proc prepend*[T](this: BaseUtil, value: seq[T]): BaseUtilAppend[T] = 
   new(result)
   result.val = value
+  result.action = "prepend"
 
 proc trim*(this: BaseUtil): BaseUtilTrim = 
   new(result)
+  result.action = "trim"
