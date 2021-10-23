@@ -1,4 +1,4 @@
-import std/[asyncdispatch, httpclient, os, strutils, strformat, json, uri, tables, typetraits]
+import std/[asyncdispatch, httpclient, os, strutils, strformat, json, uri, tables, strutils, options]
 
 const BASE_ENDPOINT = "https://database.deta.sh/v1"
 
@@ -31,6 +31,13 @@ type
   # custom error
   RequiredVar* = object of CatchableError
   InvalidValue* = object of CatchableError
+
+  # custom request errors
+  Http409Conflict* = object of CatchableError
+  Http400BadRequest* = object of CatchableError
+  Http401Unauthorized* = object of CatchableError
+  
+
 
 
 
@@ -66,40 +73,84 @@ proc AsyncBase*(this: DetaClient, name: string): AsyncBaseClient =
   result.client = newAsyncHttpClient()
 
 
-proc request(this: BaseClient | AsyncBaseClient, url: string, httpMethod: string | HttpMethod, body: string = ""): Future[string] {.multisync.} =
+proc request(this: BaseClient | AsyncBaseClient, url: string, httpMethod: string | HttpMethod, body: string = ""): Future[(int, Option[string])] {.multisync.} =
   this.client.headers = newHttpHeaders({"X-API-Key": this.projectKey, "Content-Type": "application/json"})
 
-  let r = await this.client.request(url = &"{BASE_ENDPOINT}/{this.projectId}/{this.name}" & url, httpMethod = httpMethod, body = body)
-  result = await r.body
-
-
-proc get*(this: BaseClient | AsyncBaseClient, key: string): Future[JsonNode] {.multisync.} =
-  let r = await this.request(&"/items/{encodeUrl(key)}", HttpGet)
+  let req = await this.client.request(url = &"{BASE_ENDPOINT}/{this.projectId}/{this.name}" & url, httpMethod = httpMethod, body = body)
   
-  result = parseJson(r)
+  let
+    code = req.code
+    body = await req.body
+
+  var
+    c: int = 0
+    b: Option[string] = some("")
+
+  case code:
+    of Http404:
+      c = 404
+      b = none(string)
+    of Http401:
+      raise newException(Http401Unauthorized, "Unauthorized")
+    of Http409:
+      let err = parseJson(body)
+      raise newException(Http409Conflict, err{"errors"}[0].getStr())
+    of Http400:
+      raise newException(Http400BadRequest, "Bad Request")
+    of Http200, Http201, Http202, HttpCode(207):
+      c = 200
+      b = some(body)
+    else:
+      raise newException(HttpRequestError, "Internal Error. If problem persists, please raise an issue.")
+
+  result = (c, b)
+
+proc get*(this: BaseClient | AsyncBaseClient, key: string): Future[Option[JsonNode]] {.multisync.} =
+  # check if key is empty or blank
+  if key.strip() == "":
+    raise ValueError.newException("Key is empty!")
+
+  # send request
+  let (status, r) = await this.request(&"/items/{encodeUrl(key)}", HttpGet)
+
+  if status == 400:
+    return none(JsonNode)
+
+  result = some(parseJson(r.get()))
 
 
 proc put*(this: BaseClient | AsyncBaseClient, items: seq[JsonNode]): Future[JsonNode] {.multisync.} =
   let payload = %*{"items": items}
-  let r = await this.request(&"/items", HttpPut, $payload)
+  let (_, r) = await this.request(&"/items", HttpPut, $payload)
 
-  result = parseJson(r)
+  result = parseJson(r.get())
 
 
 proc delete*(this: BaseClient | AsyncBaseClient, key: string): Future[JsonNode] {.multisync.} =
-  let r = await this.request(&"/items/{key}", HttpDelete)
+  # check if key is empty or blank
+  if key.strip() == "":
+    raise ValueError.newException("Key is empty!")
 
-  result = parseJson(r)
+  # send request
+  let (_, r) = await this.request(&"/items/{key}", HttpDelete)
+
+  result = parseJson(r.get())
 
 proc insert*(this: BaseClient | AsyncBaseClient, item: JsonNode): Future[JsonNode] {.multisync.} =
   let payload = %*{
     "item": item
   }
 
-  let r = await this.request(&"/items", HttpPost, $payload)
-  result = parseJson(r)
+  # send request
+  let (_, r) = await this.request(&"/items", HttpPost, $payload)
+  result = parseJson(r.get())
 
 proc update*(this: BaseClient | AsyncBaseClient, updates: JsonNode, key: string): Future[JsonNode] {.multisync.} =
+  # check if key is empty or blank
+  if key.strip() == "":
+    raise ValueError.newException("Key is empty!")
+
+  # send request
   new(result)
 
   var 
@@ -131,8 +182,9 @@ proc update*(this: BaseClient | AsyncBaseClient, updates: JsonNode, key: string)
     "delete": payloadTrim
   }
 
-  let r = await this.request(&"/items/{key}", HttpPatch, $payload)
-  result = parseJson(r)
+  # send request
+  let (_, r) = await this.request(&"/items/{key}", HttpPatch, $payload)
+  result = parseJson(r.get())
     
 proc query*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode], limit: uint = 1, last: string = ""): Future[JsonNode] {.multisync.} =
   let payload = %*{
@@ -141,8 +193,9 @@ proc query*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode], limit: uin
     "last": last
   }
 
-  let r = await this.request(&"/query", HttpPost, $payload)
-  result = parseJson(r)
+  # send request
+  let (_, r) = await this.request(&"/query", HttpPost, $payload)
+  result = parseJson(r.get())
 
 proc util*(this: BaseClient | AsyncBaseClient): BaseUtil = 
   new(result)
