@@ -106,6 +106,8 @@ proc request(this: BaseClient | AsyncBaseClient, url: string, httpMethod: string
   result = (c, b)
 
 proc get*(this: BaseClient | AsyncBaseClient, key: string): Future[Option[JsonNode]] {.multisync.} =
+  ## `get` retrieves an item from the database by it's `key`.
+
   # check if key is empty or blank
   if key.strip() == "":
     raise ValueError.newException("Key is empty!")
@@ -113,20 +115,28 @@ proc get*(this: BaseClient | AsyncBaseClient, key: string): Future[Option[JsonNo
   # send request
   let (status, r) = await this.request(&"/items/{encodeUrl(key)}", HttpGet)
 
-  if status == 400:
+  if status == 404:
     return none(JsonNode)
 
   result = some(parseJson(r.get()))
 
 
 proc put*(this: BaseClient | AsyncBaseClient, items: seq[JsonNode]): Future[JsonNode] {.multisync.} =
+  ## `put` is the fastest way to store an item in the database.
+  ## If an item already exists under a giver key, `put` will replace this item.
+  ## If key is not provided, a 12 char key string is randomly generated.
+
   let payload = %*{"items": items}
+
+  # send request
   let (_, r) = await this.request(&"/items", HttpPut, $payload)
 
   result = parseJson(r.get())
 
 
 proc delete*(this: BaseClient | AsyncBaseClient, key: string): Future[JsonNode] {.multisync.} =
+  ## `delete` deletes an item from the database that matches the key provided.
+
   # check if key is empty or blank
   if key.strip() == "":
     raise ValueError.newException("Key is empty!")
@@ -137,6 +147,9 @@ proc delete*(this: BaseClient | AsyncBaseClient, key: string): Future[JsonNode] 
   result = parseJson(r.get())
 
 proc insert*(this: BaseClient | AsyncBaseClient, item: JsonNode): Future[JsonNode] {.multisync.} =
+  ## `insert` inserts a single item into a Base, but is uniq from `put` 
+  ## in that will raise an error if the `key` already exists in the database.
+
   let payload = %*{
     "item": item
   }
@@ -146,6 +159,8 @@ proc insert*(this: BaseClient | AsyncBaseClient, item: JsonNode): Future[JsonNod
   result = parseJson(r.get())
 
 proc update*(this: BaseClient | AsyncBaseClient, updates: JsonNode, key: string): Future[JsonNode] {.multisync.} =
+  ## `update` updates an existing item from the database.
+
   # check if key is empty or blank
   if key.strip() == "":
     raise ValueError.newException("Key is empty!")
@@ -184,23 +199,16 @@ proc update*(this: BaseClient | AsyncBaseClient, updates: JsonNode, key: string)
 
   # send request
   let (_, r) = await this.request(&"/items/{key}", HttpPatch, $payload)
+
   result = parseJson(r.get())
     
-proc query*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode], limit: uint = 1, last: string = ""): Future[JsonNode] {.multisync.} =
-  let payload = %*{
-    "query": query,
-    "limit": limit,
-    "last": last
-  }
 
-  # send request
-  let (_, r) = await this.request(&"/query", HttpPost, $payload)
-  result = parseJson(r.get())
 
 proc util*(this: BaseClient | AsyncBaseClient): BaseUtil = 
   new(result)
 
 proc increment*(this: BaseUtil, value: int | float = 1): BaseUtilIncrement =
+  ## Increment increments the value of an attribute (must be a number).
   new(result)
   result.val = value
   result.action = "increment"
@@ -218,3 +226,19 @@ proc prepend*[T](this: BaseUtil, value: seq[T]): BaseUtilAppend[T] =
 proc trim*(this: BaseUtil): BaseUtilTrim = 
   new(result)
   result.action = "trim"
+
+
+proc fetch*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode], limit: uint = 1, last: string = ""): Future[JsonNode] {.multisync.} =
+  ## `fetch` retrieves a list of items matching a query. It will retrieve everything if not query if provided.
+  ## A query is composed of a single query object or a list of queries and in the case of a list, the individual queries are OR'ed.
+
+  let payload = %*{
+    "query": query,
+    "limit": limit,
+    "last": last
+  }
+
+  # send request
+  let (_, r) = await this.request(&"/query", HttpPost, $payload)
+  
+  result = parseJson(r.get())
