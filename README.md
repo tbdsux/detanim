@@ -4,14 +4,14 @@ Deta SDK for NimLang
 
 ## Currently Implemented Functions
 
-- **Base**
+- **Base** (not fully tested)
 
   - get
-  - put (incomplete but works)
+  - put (only `putMany` style / variant)
   - insert
   - delete
-  - query (partially)
-  - update (not yet)
+  - query
+  - update
 
 - **Drive**
   - [not started]
