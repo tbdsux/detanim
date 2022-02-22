@@ -2,6 +2,32 @@
 
 Deta SDK for NimLang
 
+## Install
+
+```sh
+nimble install https://github.com/TheBoringDude/detanim.git
+```
+
+## Usage
+
+```nim
+import detanim, os, json
+
+let
+    r = Deta(getEnv("API_KEY"))
+    base = r.Base("sample")
+
+echo "putting new data for key `hello`"
+let x = base.put(@[%*{"key": "123", "hello": "world"}])
+echo $x
+
+
+echo "getting data of key `hello`"
+let hello = base.get("123")
+echo $hello
+
+```
+
 ## Currently Implemented Functions
 
 - **Base** (not fully tested)
