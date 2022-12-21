@@ -1,4 +1,5 @@
-import std/[asyncdispatch, httpclient, os, strutils, strformat, json, uri, tables, strutils, options]
+import std/[asyncdispatch, httpclient, os, strformat, json, uri, tables,
+    strutils, options]
 
 const BASE_ENDPOINT = "https://database.deta.sh/v1"
 
@@ -26,7 +27,7 @@ type
   BaseUtilTrim* = ref object of BaseUtil
 
   # update table
-  UpdateTable* = Table[string, any]
+  UpdateTable* = Table[string, auto]
 
   # custom error
   RequiredVar* = object of CatchableError
@@ -36,27 +37,28 @@ type
   Http409Conflict* = object of CatchableError
   Http400BadRequest* = object of CatchableError
   Http401Unauthorized* = object of CatchableError
-  
 
 
 
 
-proc Deta*(projectKey: string = getEnv("DETA_PROJECT_KEY", "")): DetaClient {.raises: [RequiredVar, InvalidValue].} =
+
+proc newDeta*(projectKey: string = getEnv("DETA_PROJECT_KEY",
+    "")): DetaClient {.raises: [RequiredVar, InvalidValue].} =
   ## New Deta instance.
-  
+
   if projectKey == "":
     raise newException(RequiredVar, "No Project Key set! You can also set your project key in DETA_PROJECT_KEY environment variable.")
 
   let v = projectKey.split("_")
   if v.len != 2:
     raise newException(InvalidValue, "Invalid Project Key!")
-    
+
   new(result)
   result.projectKey = projectKey
   result.projectId = v[0]
 
 
-proc Base*(this: DetaClient, name: string): BaseClient =
+proc newBase*(this: DetaClient, name: string): BaseClient =
   ## Instantiate a new Deta Base instance.
   new(result)
   result.projectKey = this.projectKey
@@ -64,7 +66,7 @@ proc Base*(this: DetaClient, name: string): BaseClient =
   result.name = name
   result.client = newHttpClient()
 
-proc AsyncBase*(this: DetaClient, name: string): AsyncBaseClient =
+proc newAsyncBase*(this: DetaClient, name: string): AsyncBaseClient =
   ## Instantiate a new async Deta Base instance.
   new(result)
   result.projectKey = this.projectKey
@@ -73,11 +75,15 @@ proc AsyncBase*(this: DetaClient, name: string): AsyncBaseClient =
   result.client = newAsyncHttpClient()
 
 
-proc request(this: BaseClient | AsyncBaseClient, url: string, httpMethod: string | HttpMethod, body: string = ""): Future[(int, Option[string])] {.multisync.} =
-  this.client.headers = newHttpHeaders({"X-API-Key": this.projectKey, "Content-Type": "application/json"})
+proc request(this: BaseClient | AsyncBaseClient, url: string,
+    httpMethod: string | HttpMethod, body: string = ""): Future[(int, Option[
+    string])] {.multisync.} =
+  this.client.headers = newHttpHeaders({"X-API-Key": this.projectKey,
+      "Content-Type": "application/json"})
 
-  let req = await this.client.request(url = &"{BASE_ENDPOINT}/{this.projectId}/{this.name}" & url, httpMethod = httpMethod, body = body)
-  
+  let req = await this.client.request(url = &"{BASE_ENDPOINT}/{this.projectId}/{this.name}" &
+      url, httpMethod = httpMethod, body = body)
+
   let
     code = req.code
     body = await req.body
@@ -105,49 +111,92 @@ proc request(this: BaseClient | AsyncBaseClient, url: string, httpMethod: string
 
   result = (c, b)
 
-proc get*(this: BaseClient | AsyncBaseClient, key: string): Future[Option[JsonNode]] {.multisync.} =
-  ## `get` retrieves an item from the database by it's `key`.
+
+
+proc get*(this: BaseClient | AsyncBaseClient, key: string): Future[
+    (JsonNode, bool)] {.multisync.} =
+  ## `get` retrieves and items from the database with it's key
+  ## and returns a json object response
 
   # check if key is empty or blank
-  if key.strip() == "":
-    raise ValueError.newException("Key is empty!")
+  assert(key.strip() != "", "Key is empty!")
 
   # send request
   let (status, r) = await this.request(&"/items/{encodeUrl(key)}", HttpGet)
 
   if status == 404:
-    return none(JsonNode)
+    result = (%*{}, false)
+    return
 
-  result = some(parseJson(r.get()))
+  result = (parseJson(r.get()), true)
 
 
-proc put*(this: BaseClient | AsyncBaseClient, items: seq[JsonNode]): Future[JsonNode] {.multisync.} =
-  ## `put` is the fastest way to store an item in the database.
-  ## If an item already exists under a giver key, `put` will replace this item.
-  ## If key is not provided, a 12 char key string is randomly generated.
+type
+  PutItems* = object
+    items*: seq[JsonNode]
+
+  PutResponse* = object
+    processed*: Option[PutItems]
+    failed*: Option[PutItems]
+
+proc putMany*(this: BaseClient | AsyncBaseClient, items: seq[JsonNode]): Future[
+    PutResponse] {.multisync.} =
+  ## `putMany` puts multiple items in the database.
 
   let payload = %*{"items": items}
 
   # send request
   let (_, r) = await this.request(&"/items", HttpPut, $payload)
 
-  result = parseJson(r.get())
+  result = to(parseJson(r.get()), PutResponse)
 
 
-proc delete*(this: BaseClient | AsyncBaseClient, key: string): Future[JsonNode] {.multisync.} =
+proc put*(this: BaseClient | AsyncBaseClient, item: JsonNode): Future[
+    string] {.multisync.} =
+  ## `put` is the fastest way to store an item in the database.
+  ## If an item already exists under a giver key, `put` will replace this item.
+  ## If key is not provided, a 12 char key string is randomly generated.
+
+  let output = await this.putMany(@[item])
+
+  if output.processed.isSome():
+    if len(output.processed.get().items) == 1:
+      result = output.processed.get().items[0]["key"].getStr()
+
+
+proc put*(this: BaseClient | AsyncBaseClient, item: JsonNode,
+    key: string): Future[string] {.multisync.} =
+  ## `put` is the fastest way to store an item in the database.
+  ## If an item already exists under a giver key, `put` will replace this item.
+  ## If key is not provided, a 12 char key string is randomly generated.
+
+  # check if key is empty or blank
+  assert(key.strip() != "", "Key is empty!")
+
+  var it = item
+  it["key"] = %key
+
+  let output = await this.putMany(@[it])
+
+  if output.processed.isSome():
+    if len(output.processed.get().items) == 1:
+      result = output.processed.get().items[0]["key"].getStr()
+
+proc delete*(this: BaseClient | AsyncBaseClient, key: string): Future[
+    JsonNode] {.multisync.} =
   ## `delete` deletes an item from the database that matches the key provided.
 
   # check if key is empty or blank
-  if key.strip() == "":
-    raise ValueError.newException("Key is empty!")
+  assert(key.strip() != "", "Key is empty!")
 
   # send request
   let (_, r) = await this.request(&"/items/{key}", HttpDelete)
 
   result = parseJson(r.get())
 
-proc insert*(this: BaseClient | AsyncBaseClient, item: JsonNode): Future[JsonNode] {.multisync.} =
-  ## `insert` inserts a single item into a Base, but is uniq from `put` 
+proc insert*(this: BaseClient | AsyncBaseClient, item: JsonNode): Future[
+    JsonNode] {.multisync.} =
+  ## `insert` inserts a single item into a Base, but is uniq from `put`
   ## in that will raise an error if the `key` already exists in the database.
 
   let payload = %*{
@@ -158,24 +207,39 @@ proc insert*(this: BaseClient | AsyncBaseClient, item: JsonNode): Future[JsonNod
   let (_, r) = await this.request(&"/items", HttpPost, $payload)
   result = parseJson(r.get())
 
-proc update*(this: BaseClient | AsyncBaseClient, updates: JsonNode, key: string): Future[JsonNode] {.multisync.} =
+proc insert*(this: BaseClient | AsyncBaseClient, item: JsonNode,
+    key: string): Future[JsonNode] {.multisync.} =
+  ## `insert` inserts a single item into a Base, but is uniq from `put`
+  ## in that will raise an error if the `key` already exists in the database.
+
+  # check if key is empty or blank
+  assert(key.strip() != "", "Key is empty!")
+
+  var it = item
+  it["key"] = %it
+  let payload = %*{
+    "item": it
+  }
+
+  # send request
+  let (_, r) = await this.request(&"/items", HttpPost, $payload)
+  result = parseJson(r.get())
+
+proc update*(this: BaseClient | AsyncBaseClient, updates: JsonNode,
+    key: string) {.multisync.} =
   ## `update` updates an existing item from the database.
 
   # check if key is empty or blank
-  if key.strip() == "":
-    raise ValueError.newException("Key is empty!")
+  assert(key.strip() != "", "Key is empty!")
 
-  # send request
-  new(result)
-
-  var 
+  var
     payloadAppend = %*{}
     payloadPrepend = %*{}
     payloadIncrement = %*{}
     payloadSet = %*{}
     payloadTrim = newSeq[string]()
 
-  
+
   for i, j in updates.pairs:
     case j{"action"}.getStr():
       of "append":
@@ -198,13 +262,10 @@ proc update*(this: BaseClient | AsyncBaseClient, updates: JsonNode, key: string)
   }
 
   # send request
-  let (_, r) = await this.request(&"/items/{key}", HttpPatch, $payload)
-
-  result = parseJson(r.get())
-    
+  discard await this.request(&"/items/{key}", HttpPatch, $payload)
 
 
-proc util*(this: BaseClient | AsyncBaseClient): BaseUtil = 
+proc util*(this: BaseClient | AsyncBaseClient): BaseUtil =
   new(result)
 
 proc increment*(this: BaseUtil, value: int | float = 1): BaseUtilIncrement =
@@ -213,22 +274,32 @@ proc increment*(this: BaseUtil, value: int | float = 1): BaseUtilIncrement =
   result.val = value
   result.action = "increment"
 
-proc append*[T](this: BaseUtil, value: seq[T]): BaseUtilAppend[T] = 
+proc append*[T](this: BaseUtil, value: seq[T]): BaseUtilAppend[T] =
   new(result)
   result.val = value
   result.action = "append"
 
-proc prepend*[T](this: BaseUtil, value: seq[T]): BaseUtilAppend[T] = 
+proc prepend*[T](this: BaseUtil, value: seq[T]): BaseUtilAppend[T] =
   new(result)
   result.val = value
   result.action = "prepend"
 
-proc trim*(this: BaseUtil): BaseUtilTrim = 
+proc trim*(this: BaseUtil): BaseUtilTrim =
   new(result)
   result.action = "trim"
 
 
-proc fetch*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode], limit: uint = 1, last: string = ""): Future[JsonNode] {.multisync.} =
+type
+  FetchPaging* = object
+    size*: int
+    last*: Option[string]
+
+  FetchResponse* = object
+    paging*: FetchPaging
+    items*: seq[JsonNode]
+
+proc fetch*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode] = @[],
+    limit: uint = 1, last: string = ""): Future[FetchResponse] {.multisync.} =
   ## `fetch` retrieves a list of items matching a query. It will retrieve everything if not query if provided.
   ## A query is composed of a single query object or a list of queries and in the case of a list, the individual queries are OR'ed.
 
@@ -240,5 +311,5 @@ proc fetch*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode], limit: uin
 
   # send request
   let (_, r) = await this.request(&"/query", HttpPost, $payload)
-  
-  result = parseJson(r.get())
+
+  result = to(parseJson(r.get()), FetchResponse)
