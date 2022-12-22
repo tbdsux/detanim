@@ -67,18 +67,25 @@ echo $data
 
 ## Currently Implemented Functions
 
-- **Base** (not fully tested)
+Functions are not fully tested, please file issues if they are not working as expected.
+
+- **Base**
 
   - get
-  - put (only `putMany` style / variant)
+  - put
+  - putMany
   - insert
   - delete
   - query
   - update
 
 - **Drive**
-  - [not started]
+
+  - put - only 10Mb put files (chunk upload not yet supported)
+  - download - `get`
+  - list
+  - delete
 
 ##
 
-&copy; 2021 | TheBoringDude | [License](./LICENSE0)
+**&copy; 2021 | [tbdsux](https://tbdsux.github.io/)**

@@ -2,6 +2,7 @@ import std/[asyncdispatch, httpclient, os, strformat, json, uri, tables,
     strutils, options]
 
 const BASE_ENDPOINT = "https://database.deta.sh/v1"
+const DRIVE_ENDPOINT = "https://drive.deta.sh/v1"
 
 type
   DetaClient* = ref object of RootObj
@@ -14,6 +15,13 @@ type
     name*: string
   BaseClient* = BaseMain[HttpClient]
   AsyncBaseClient* = BaseMain[AsyncHttpClient]
+
+  # deta drive
+  DriveMain*[HT] = ref object of DetaClient
+    client*: HT
+    name*: string
+  DriveClient* = BaseMain[HttpClient]
+  AsyncDriveClient* = BaseMain[AsyncHttpClient]
 
   # deta base util functions
   BaseUtil* = ref object of RootObj
@@ -37,6 +45,7 @@ type
   Http409Conflict* = object of CatchableError
   Http400BadRequest* = object of CatchableError
   Http401Unauthorized* = object of CatchableError
+  Http413PayloadTooLarge* = object of CatchableError
 
 
 
@@ -73,6 +82,25 @@ proc newAsyncBase*(this: DetaClient, name: string): AsyncBaseClient =
   result.projectId = this.projectId
   result.name = name
   result.client = newAsyncHttpClient()
+
+
+proc newDrive*(this: DetaClient, name: string): DriveClient =
+  ## Instantiate a new Deta Base instance.
+  new(result)
+  result.projectKey = this.projectKey
+  result.projectId = this.projectId
+  result.name = name
+  result.client = newHttpClient()
+
+proc newAsyncDrive*(this: DetaClient, name: string): AsyncDriveClient =
+  ## Instantiate a new async Deta Base instance.
+  new(result)
+  result.projectKey = this.projectKey
+  result.projectId = this.projectId
+  result.name = name
+  result.client = newAsyncHttpClient()
+
+
 
 
 proc request(this: BaseClient | AsyncBaseClient, url: string,
@@ -313,3 +341,174 @@ proc fetch*(this: BaseClient | AsyncBaseClient, query: seq[JsonNode] = @[],
   let (_, r) = await this.request(&"/query", HttpPost, $payload)
 
   result = to(parseJson(r.get()), FetchResponse)
+
+
+
+
+################# DRIVE functions
+
+
+# 10 MB upload chunk size
+# const UPLOAD_CHUNK_SIZE = 1024 * 1024 * 10
+
+
+proc driveRequest(this: DriveClient | AsyncDriveClient, url: string,
+    httpMethod: string | HttpMethod, body: string = "",
+        contentType: string = "application/json"): Future[(int, Option[
+    string])] {.multisync.} =
+
+  this.client.headers = newHttpHeaders({"X-API-Key": this.projectKey,
+      "Content-Type": contentType})
+
+
+  let req = await this.client.request(url = &"{DRIVE_ENDPOINT}/{this.projectId}/{this.name}" &
+      url, httpMethod = httpMethod, body = body)
+
+  let
+    code = req.code
+    body = await req.body
+
+  var
+    c: int = 0
+    b: Option[string] = some("")
+
+  case code:
+    of Http404:
+      c = 404
+      b = none(string)
+    of Http401:
+      raise newException(Http401Unauthorized, "Unauthorized")
+    of Http409:
+      let err = parseJson(body)
+      raise newException(Http409Conflict, err{"errors"}[0].getStr())
+    of Http400:
+      raise newException(Http400BadRequest, "Bad Request")
+    of Http200, Http201, Http202, HttpCode(207):
+      c = 200
+      b = some(body)
+    else:
+      raise newException(HttpRequestError, "Internal Error. If problem persists, please raise an issue.")
+
+  result = (c, b)
+
+# proc startUpload(this: DriveClient | AsyncDriveClient, name: string): Future[
+#     string] {.multisync.} =
+#   let (_, r) = await this.driveRequest(&"/uploads?name={name}", HttpPost)
+#   let data = parseJson(r.get())
+
+#   result = data["upload_id"].getStr()
+
+# proc finishUpload(this: DriveClient | AsyncDriveClient, name: string,
+#     uploadId: string): Future[JsonNode] {.multisync.} =
+#   discard await this.driveRequest(&"/uploads/${uploadId}?name={name}", HttpPatch)
+
+
+# proc abortUpload(this: DriveClient | AsyncDriveClient, name: string,
+#     uploadId: string): Future[JsonNode] {.multisync.} =
+#   discard await this.driveRequest(&"/uploads/${uploadId}?name={name}", HttpDelete)
+
+
+# proc uploadPart(this: DriveClient | AsyncDriveClient, name: string,
+#     chunk: string, uploadId: string, part: int,
+#     contentType: string = "") {.multisync.} =
+
+#   discard await this.driveRequest(
+#       &"/uploads/{uploadId}/parts?name={name}&part={part}", HttpPost, chunk, contentType)
+
+
+
+type
+  DrivePutResponse* = object
+    name*: string
+    project_id*: string
+    drive_name*: string
+
+  DriveListPaging* = object
+    size*: Option[int]
+    last*: Option[string]
+  DriveListResponse* = object
+    paging*: DriveListPaging
+    names*: seq[string]
+
+proc put*(this: DriveClient | AsyncDriveClient, name: string, path: string,
+    contentType: string = "application/octet-stream"): Future[
+        DrivePutResponse] {.multisync.} =
+  ## Stores a smaller file in a single request.
+  ## Max: 10Mb file
+  let contents = readFile(path)
+
+  let (_, r) = await this.driveRequest(&"/files?name={name}", HttpPost,
+      contents, contentType)
+
+  result = to(parseJson(r.get()), DrivePutResponse)
+
+# TODO: not working atm
+# proc putChunk*(this: DriveClient | AsyncDriveClient, name: string, path: string,
+#     contentType: string = "application/octet-stream"): Future[
+#         string] {.multisync.} =
+
+#   var uploadId = await this.startUpload(name)
+#   echo $uploadId
+
+#   var
+#     strm = newFileStream(path, fmRead)
+#     part = 1
+
+#   if not isNil(strm):
+#     while not strm.atEnd():
+#       var buffer: array[UPLOAD_CHUNK_SIZE, char]
+#       let size = strm.readData(addr(buffer), UPLOAD_CHUNK_SIZE)
+
+#       if size > 0:
+#         await this.uploadPart(name, $buffer, uploadId, part, contentType)
+#         part += 1
+
+#     discard await this.finishUpload(name, uploadId)
+#     result = name
+
+
+proc list*(this: DriveClient | AsyncDriveClient, limit: int = 1000,
+    prefix: string = "", last: string = ""): Future[
+        DriveListResponse] {.multisync.} =
+  ## List file names from drive.
+
+  var url = &"/files?limit={limit}"
+  if prefix != "":
+    url = url & &"&prefix={prefix}"
+  if last != "":
+    url = url & &"&last={last}"
+
+  let (_, r) = await this.driveRequest(url, HttpGet)
+  result = to(parseJson(r.get()), DriveListResponse)
+
+
+proc download*(this: DriveClient | AsyncDriveClient,
+    name: string) {.multisync.} =
+  ## Download file from drive with name.
+
+  var file = open(name, fmWrite)
+  defer: file.close()
+
+  this.client.headers = newHttpHeaders({"X-API-Key": this.projectKey})
+  let content = await this.client.getContent(&"{DRIVE_ENDPOINT}/{this.projectId}/{this.name}/files/download?name={name}")
+
+  file.write(content)
+
+
+type
+  DriveDeleteResponse = object
+    deleted: seq[string]
+    failed: Option[JsonNode]
+
+proc delete*(this: DriveClient | AsyncDriveClient,
+    names: seq[string]): Future[DriveDeleteResponse] {.multisync.} =
+  ## Delete files from drive
+
+
+  let payload = %*{
+    "names": names
+  }
+
+  let (_, r) = await this.driveRequest("/files", HttpDelete, $payload)
+  result = to(parseJson(r.get()), DriveDeleteResponse)
+
